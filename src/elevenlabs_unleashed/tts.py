@@ -1,12 +1,13 @@
-from elevenlabs_unleashed.account import create_account
+import json
 import os
+import pathlib
+import sys
 import threading
-from elevenlabs import generate, stream, set_api_key, get_api_key
+
+from elevenlabs import generate, stream, set_api_key, get_api_key, save
 from elevenlabs.api import User
 from elevenlabs.api.error import APIError
-import json
-import sys
-import pathlib
+from elevenlabs_unleashed.account import create_account
 
 
 def __get_datadir() -> pathlib.Path:
@@ -45,10 +46,10 @@ class UnleashedTTS:
     """
 
     def __init__(
-        self,
-        accounts_save_path: str = DATADIR / "elevenlabs_accounts.json",
-        nb_accounts: int = 4,
-        create_accounts_threads: int = 2,
+            self,
+            accounts_save_path: str = DATADIR / "elevenlabs_accounts.json",
+            nb_accounts: int = 4,
+            create_accounts_threads: int = 2,
     ):
         self.accounts_save_path = accounts_save_path
         self.nb_accounts = nb_accounts
@@ -56,7 +57,8 @@ class UnleashedTTS:
         self.__check_accounts_file()
         self.__populate_accounts(create_accounts_threads)
 
-        self.__update_accounts_thread = threading.Thread(target=UnleashedTTS.__update_accounts, args=[self])  # type: ignore
+        self.__update_accounts_thread = threading.Thread(target=UnleashedTTS.__update_accounts,
+                                                         args=[self])  # type: ignore
         self.__update_accounts_thread.start()
 
     def speak(self, message: str, voice="Josh", model="eleven_multilingual_v1"):
@@ -73,6 +75,48 @@ class UnleashedTTS:
         print("[ElevenLabs] Starting the stream...")
         try:
             stream(audio_stream)  # type: ignore
+            # Restart accounts thread
+            self.__update_accounts_thread = threading.Thread(
+                target=UnleashedTTS.__update_accounts, args=[self]
+            )
+            self.__update_accounts_thread.start()
+        except APIError as e:
+            print(e)
+            if e.message and e.message.startswith("Unusual activity detected."):
+                print(
+                    "[ElevenLabs] Unusual activity detected. Speak again in a few hours."
+                )
+            else:
+                print(
+                    "[ElevenLabs] Text is too long. Splitting into multiple requests..."
+                )
+
+                i = MAX_REQUEST_CHARACTERS
+                while i > 0 and not (message[i] in [".", "!", "?"]):
+                    i -= 1
+
+                if i == 0:
+                    print(
+                        "[ElevenLabs] No punctuation found. Splitting at max characters..."
+                    )
+                    i = MAX_REQUEST_CHARACTERS
+
+                self.speak(message[:i])
+                self.speak(message[i:])
+
+    def save(self, message: str, save_file: str, voice="Josh", model="eleven_multilingual_v1"):
+        print("[ElevenLabs] Selecting account...")
+        try:
+            self.__select_account(len(message))
+        except Exception as e:
+            print("[ElevenLabs] Exception: ", e)
+            return
+
+        audio = generate(text=message, voice=voice, model=model)
+
+        print("[ElevenLabs] Starting the stream...")
+        try:
+            save(audio=audio, filename=save_file)
             # Restart accounts thread
             self.__update_accounts_thread = threading.Thread(
                 target=UnleashedTTS.__update_accounts, args=[self]
@@ -123,11 +167,11 @@ class UnleashedTTS:
         # Check if the file contains valid accounts
         for account in accounts:
             if not (
-                "username" in account and "password" in account and "api_key" in account
+                    "username" in account and "password" in account and "api_key" in account
             ) or not (
-                isinstance(account["username"], str)
-                and isinstance(account["password"], str)
-                and isinstance(account["api_key"], str)
+                    isinstance(account["username"], str)
+                    and isinstance(account["password"], str)
+                    and isinstance(account["api_key"], str)
             ):
                 print("[ElevenLabs] Accounts file is corrupted. Deleting it...")
                 os.remove(self.accounts_save_path)
@@ -146,7 +190,7 @@ class UnleashedTTS:
             )
             threads = []
             for i in range(
-                min(create_accounts_threads, self.nb_accounts - len(self.accounts))
+                    min(create_accounts_threads, self.nb_accounts - len(self.accounts))
             ):
                 thread = threading.Thread(target=self.__create_account)
                 thread.start()
